@@ -1,7 +1,6 @@
 package editor
 
 import (
-	"fmt"
 	"strings"
 	"unicode"
 
@@ -13,24 +12,27 @@ type Completion struct {
 	Description string
 }
 
-
-
 func (e *Editor) getCompletions() []Completion {
 	// Get the word under cursor
 	if e.cursorY >= len(e.lines) {
 		return nil
 	}
-	
+
 	line := e.lines[e.cursorY]
 	if e.cursorX > len(line) {
 		return nil
 	}
-	
+
 	start := e.cursorX
 	for start > 0 && isIdentChar(rune(line[start-1])) {
 		start--
 	}
 	prefix := line[start:e.cursorX]
+
+	// Skip if prefix is too short
+	if len(prefix) < 2 {
+		return nil
+	}
 
 	// Get language-specific completions
 	var completions []Completion
@@ -65,38 +67,115 @@ func (e *Editor) showCompletions() {
 		return
 	}
 
-	// Draw completion box
-	style := tcell.StyleDefault
-	boxStyle := style.Background(tcell.ColorDarkBlue).Foreground(tcell.ColorWhite)
-	
-	// Calculate box dimensions
+	// Store completions for selection
+	e.completions = completions
+	e.completionIndex = 0
+	e.completionActive = true
+}
+
+// Apply the selected completion
+func (e *Editor) applyCompletion() {
+	if !e.completionActive || len(e.completions) == 0 {
+		return
+	}
+
+	// Get the selected completion
+	completion := e.completions[e.completionIndex]
+
+	// Find the start of the current word
+	line := e.lines[e.cursorY]
+	wordStart := e.cursorX
+	for wordStart > 0 && isIdentChar(rune(line[wordStart-1])) {
+		wordStart--
+	}
+
+	// Replace the current word with the completion
+	newLine := line[:wordStart] + completion.Text + line[e.cursorX:]
+	e.addUndo(Action{
+		Type:    "insert",
+		action:  "insert",
+		lines:   e.lines,
+		cursorX: e.cursorX,
+		cursorY: e.cursorY,
+		text:    completion.Text,
+	})
+	e.lines[e.cursorY] = newLine
+	e.cursorX = wordStart + len(completion.Text)
+	e.isDirty = true
+
+	// Clear completion state
+	e.completionActive = false
+}
+
+// Navigate through completions
+func (e *Editor) nextCompletion() {
+	if e.completionActive && len(e.completions) > 0 {
+		e.completionIndex = (e.completionIndex + 1) % len(e.completions)
+	}
+}
+
+func (e *Editor) prevCompletion() {
+	if e.completionActive && len(e.completions) > 0 {
+		e.completionIndex--
+		if e.completionIndex < 0 {
+			e.completionIndex = len(e.completions) - 1
+		}
+	}
+}
+
+func (e *Editor) drawCompletions() {
+	// Calculate position for completion popup
+	popupX := e.cursorX
+	if e.showLineNumbers {
+		popupX += 5
+	}
+	if e.treeVisible {
+		popupX += e.treeWidth + 1
+	}
+
+	popupY := e.cursorY - e.scrollY + 1 // Show below cursor
+
+	// Ensure popup fits on screen
+	if popupY >= e.screenHeight-3 {
+		popupY = e.cursorY - e.scrollY - len(e.completions) - 1 // Show above cursor
+	}
+
+	// Calculate max width needed
 	maxWidth := 0
-	for _, c := range completions {
+	for _, c := range e.completions {
 		width := len(c.Text) + len(c.Description) + 3 // +3 for spacing
 		if width > maxWidth {
 			maxWidth = width
 		}
 	}
-	
-	// Draw box at cursor position
-	x := e.cursorX
-	y := e.cursorY + 1
-	
-	// Ensure box stays within screen bounds
-	if y+len(completions) >= e.screenHeight {
-		y = e.cursorY - len(completions)
-	}
-	if x+maxWidth >= e.screenWidth {
-		x = e.screenWidth - maxWidth - 1
-	}
-	
-	// Draw completions
-	for i, c := range completions {
-		if y+i >= e.screenHeight {
+
+	// Draw popup background
+	popupStyle := tcell.StyleDefault.Background(tcell.ColorDarkBlue).Foreground(tcell.ColorWhite)
+	selectedStyle := tcell.StyleDefault.Background(tcell.ColorBlue).Foreground(tcell.ColorWhite)
+
+	for i, comp := range e.completions {
+		// Limit number of displayed completions
+		if i >= 10 {
 			break
 		}
-		text := fmt.Sprintf("%-*s %s", maxWidth-len(c.Description)-1, c.Text, c.Description)
-		drawText(e.screen, x, y+i, boxStyle, text)
+
+		// Choose style based on selection
+		style := popupStyle
+		if i == e.completionIndex {
+			style = selectedStyle
+		}
+
+		// Draw background
+		for x := 0; x < maxWidth; x++ {
+			e.screen.SetContent(popupX+x, popupY+i, ' ', nil, style)
+		}
+
+		// Draw completion text
+		drawText(e.screen, popupX, popupY+i, style, comp.Text)
+
+		// Draw description
+		descStyle := style.Foreground(tcell.ColorLightGray)
+		drawText(e.screen, popupX+len(comp.Text)+2, popupY+i, descStyle, comp.Description)
 	}
 }
 
@@ -122,20 +201,32 @@ var goCompletions = []Completion{
 	{Text: "import", Description: "import declaration"},
 	{Text: "var", Description: "variable declaration"},
 	{Text: "const", Description: "constant declaration"},
-	
+
 	// Common types
 	{Text: "string", Description: "string type"},
 	{Text: "int", Description: "integer type"},
 	{Text: "bool", Description: "boolean type"},
 	{Text: "error", Description: "error type"},
 	{Text: "float64", Description: "64-bit float"},
-	
+
 	// Common snippets
 	{Text: "fmt.Println()", Description: "print line"},
 	{Text: "fmt.Printf()", Description: "print formatted"},
 	{Text: "make()", Description: "make builtin"},
 	{Text: "append()", Description: "append builtin"},
 	{Text: "len()", Description: "length builtin"},
+
+	// Additional Go completions
+	{Text: "defer", Description: "defer execution"},
+	{Text: "go", Description: "start goroutine"},
+	{Text: "select", Description: "select statement"},
+	{Text: "switch", Description: "switch statement"},
+	{Text: "case", Description: "case clause"},
+	{Text: "default", Description: "default clause"},
+	{Text: "break", Description: "break statement"},
+	{Text: "continue", Description: "continue statement"},
+	{Text: "fallthrough", Description: "fallthrough statement"},
+	{Text: "goto", Description: "goto statement"},
 }
 
 var pythonCompletions = []Completion{
@@ -153,7 +244,7 @@ var pythonCompletions = []Completion{
 	{Text: "import", Description: "import statement"},
 	{Text: "from", Description: "from import"},
 	{Text: "return", Description: "return statement"},
-	
+
 	// Common functions
 	{Text: "print()", Description: "print function"},
 	{Text: "len()", Description: "length function"},
@@ -161,6 +252,19 @@ var pythonCompletions = []Completion{
 	{Text: "list()", Description: "list constructor"},
 	{Text: "dict()", Description: "dictionary constructor"},
 	{Text: "set()", Description: "set constructor"},
+
+	// Additional Python completions
+	{Text: "with", Description: "with statement"},
+	{Text: "as", Description: "as clause"},
+	{Text: "lambda", Description: "lambda expression"},
+	{Text: "yield", Description: "yield statement"},
+	{Text: "global", Description: "global statement"},
+	{Text: "nonlocal", Description: "nonlocal statement"},
+	{Text: "assert", Description: "assert statement"},
+	{Text: "raise", Description: "raise exception"},
+	{Text: "pass", Description: "pass statement"},
+	{Text: "break", Description: "break statement"},
+	{Text: "continue", Description: "continue statement"},
 }
 
 var jsCompletions = []Completion{
@@ -177,7 +281,7 @@ var jsCompletions = []Completion{
 	{Text: "return", Description: "return statement"},
 	{Text: "import", Description: "import statement"},
 	{Text: "export", Description: "export statement"},
-	
+
 	// Common methods
 	{Text: "console.log()", Description: "console log"},
 	{Text: "console.error()", Description: "console error"},
@@ -186,6 +290,17 @@ var jsCompletions = []Completion{
 	{Text: "Promise", Description: "Promise constructor"},
 	{Text: "async", Description: "async function"},
 	{Text: "await", Description: "await expression"},
+
+	// Additional JS completions
+	{Text: "document", Description: "DOM document"},
+	{Text: "window", Description: "browser window"},
+	{Text: "setTimeout()", Description: "set timeout"},
+	{Text: "setInterval()", Description: "set interval"},
+	{Text: "addEventListener()", Description: "add event listener"},
+	{Text: "querySelector()", Description: "query selector"},
+	{Text: "querySelectorAll()", Description: "query selector all"},
+	{Text: "getElementById()", Description: "get element by ID"},
+	{Text: "createElement()", Description: "create element"},
 }
 
 var rustCompletions = []Completion{
@@ -203,7 +318,7 @@ var rustCompletions = []Completion{
 	{Text: "loop", Description: "loop expression"},
 	{Text: "while", Description: "while loop"},
 	{Text: "for", Description: "for loop"},
-	
+
 	// Common macros
 	{Text: "println!()", Description: "print line macro"},
 	{Text: "vec![]", Description: "vector macro"},
@@ -211,4 +326,17 @@ var rustCompletions = []Completion{
 	{Text: "None", Description: "None variant"},
 	{Text: "Ok()", Description: "Ok variant"},
 	{Text: "Err()", Description: "Err variant"},
+
+	// Additional Rust completions
+	{Text: "pub", Description: "public visibility"},
+	{Text: "use", Description: "use declaration"},
+	{Text: "mod", Description: "module declaration"},
+	{Text: "crate", Description: "crate reference"},
+	{Text: "self", Description: "self reference"},
+	{Text: "super", Description: "parent module"},
+	{Text: "return", Description: "return expression"},
+	{Text: "break", Description: "break expression"},
+	{Text: "continue", Description: "continue expression"},
+	{Text: "unsafe", Description: "unsafe block"},
+	{Text: "extern", Description: "external block"},
 }

@@ -26,13 +26,31 @@ func (e *Editor) handleInput(ev *tcell.EventKey) {
 		return
 	}
 
+	if ev.Key() == tcell.KeyCtrlD {
+		e.mode = "command"
+		e.commandBuffer = "delete "
+		e.SetStatusMessage("Enter filename to delete: ")
+		return
+	}
+
 	switch e.mode {
 	case "normal":
 		e.handleNormalMode(ev)
 	case "insert":
 		e.handleInsertMode(ev)
 	case "command":
-		e.handleCommandMode(ev)
+		switch ev.Key() {
+		case tcell.KeyEnter:
+			e.handleCommand()
+		case tcell.KeyBackspace, tcell.KeyBackspace2:
+			if len(e.commandBuffer) > 0 {
+				e.commandBuffer = e.commandBuffer[:len(e.commandBuffer)-1]
+				e.SetStatusMessage(fmt.Sprintf(":%s", e.commandBuffer))
+			}
+		case tcell.KeyRune:
+			e.commandBuffer += string(ev.Rune())
+			e.SetStatusMessage(fmt.Sprintf(":%s", e.commandBuffer))
+		}
 	case "search":
 		e.handleSearchMode(ev)
 	case "filename":
@@ -52,7 +70,7 @@ func (e *Editor) handleNormalMode(ev *tcell.EventKey) {
 			case 'j', 'k', 'h', 'l', 'n', 'd', 'r':
 				e.handleTreeNavigation(ev)
 				return
-			case 't':  // Toggle file tree
+			case 't': // Toggle file tree
 				e.treeVisible = !e.treeVisible
 				return
 			}
@@ -93,7 +111,7 @@ func (e *Editor) handleNormalMode(ev *tcell.EventKey) {
 			e.nextMatch()
 		case 'N':
 			e.previousMatch()
-		case 't':  // Toggle file tree
+		case 't': // Toggle file tree
 			e.treeVisible = !e.treeVisible
 			if e.treeVisible {
 				e.SetStatusMessage("File tree: 'n' new file, 'D' delete, 'r' rename, Enter to open")
@@ -121,17 +139,17 @@ func (e *Editor) handleInsertMode(ev *tcell.EventKey) {
 			}
 			prefix := line[start:e.cursorX]
 			completion := completions[0].Text
-			
+
 			// Only insert the part of completion that's not already typed
 			if len(prefix) > 0 && strings.HasPrefix(completion, prefix) {
 				completion = completion[len(prefix):]
 			}
-			
+
 			// Insert the completion
 			e.lines[e.cursorY] = line[:e.cursorX] + completion + line[e.cursorX:]
 			e.cursorX += len(completion)
 			e.isDirty = true
-			
+
 			e.SetStatusMessage(fmt.Sprintf("Completed: %s", completions[0].Text))
 			e.showCompletions()
 		}
@@ -228,46 +246,88 @@ func (e *Editor) handleConfirmMode(ev *tcell.EventKey) {
 	}
 }
 
-func (e *Editor) handleMouse(ev *tcell.EventMouse) {
+func (e *Editor) handleMouseEvent(ev *tcell.EventMouse) {
 	x, y := ev.Position()
 	button := ev.Buttons()
-	
-	// Handle mouse wheel scrolling
-	if button&tcell.WheelUp != 0 {
-		e.scroll(-3)
+
+	// Check if the click is within the file tree
+	if e.treeVisible && x <= e.treeWidth {
+		e.handleTreeMouseEvent(x, y, button)
 		return
 	}
-	if button&tcell.WheelDown != 0 {
-		e.scroll(3)
-		return
+
+	// Adjust coordinates for line numbers and tree
+	adjustedX := x
+	if e.showLineNumbers {
+		adjustedX -= 5
 	}
-	
-	// Handle left click
-	if button&tcell.Button1 != 0 {
-		// Check if click is in file tree area
-		if e.treeVisible && x < e.treeWidth {
-			e.handleTreeClick(x, y)
-			return
+	if e.treeVisible {
+		adjustedX -= e.treeWidth + 1
+	}
+
+	// Adjust y coordinate for scrolling
+	adjustedY := y + e.scrollY
+
+	// Handle clicks within the text area
+	if adjustedX >= 0 && adjustedY >= 0 && adjustedY < len(e.lines) {
+		e.cursorX = adjustedX
+		e.cursorY = adjustedY
+
+		// Ensure cursor stays within line bounds
+		if e.cursorX > len(e.lines[e.cursorY]) {
+			e.cursorX = len(e.lines[e.cursorY])
 		}
-		
-		// Adjust for line numbers and tree
-		contentX := x
-		if e.showLineNumbers {
-			contentX -= 5
+
+		// Handle different mouse buttons
+		switch button {
+		case tcell.Button1: // Left click
+			// Do something on left click
+			e.SetStatusMessage(fmt.Sprintf("Left click at x: %d, y: %d", adjustedX, adjustedY))
+		case tcell.Button2: // Middle click
+			// Do something on middle click
+			e.SetStatusMessage("Middle click")
+		case tcell.Button3: // Right click
+			// Do something on right click
+			e.SetStatusMessage("Right click")
+		case tcell.WheelUp: // Mouse wheel up
+			e.scrollUp()
+		case tcell.WheelDown: // Mouse wheel down
+			e.scrollDown()
 		}
-		if e.treeVisible {
-			contentX -= e.treeWidth + 1
-		}
-		
-		// Set cursor position if within text area
-		if contentX >= 0 && y >= 0 && y < len(e.lines) {
-			line := e.lines[y]
-			if contentX <= len(line) {
-				e.cursorX = contentX
-				e.cursorY = y
-			} else if len(line) > 0 {
-				e.cursorX = len(line)
-				e.cursorY = y
+	}
+}
+
+func (e *Editor) scrollUp() {
+	if e.scrollY > 0 {
+		e.scrollY--
+	}
+}
+
+func (e *Editor) scrollDown() {
+	if e.scrollY < len(e.lines)-1 {
+		e.scrollY++
+	}
+}
+
+func (e *Editor) handleTreeMouseEvent(x, y int, button tcell.ButtonMask) {
+	// Adjust y coordinate for scrolling
+	adjustedY := y + e.scrollY
+
+	// Check if the click is within the tree bounds
+	if adjustedY >= 0 && adjustedY < len(e.fileTree.children) {
+		e.treeSelectedLine = adjustedY
+		e.SetStatusMessage(fmt.Sprintf("Selected line in tree: %d", adjustedY))
+
+		// Handle different mouse buttons
+		switch button {
+		case tcell.Button1: // Left click
+			// Open the selected file or directory
+			selectedNode := e.fileTree.children[e.treeSelectedLine]
+			if selectedNode.isDir {
+				e.currentPath = selectedNode.name
+				e.initFileTree()
+			} else {
+				e.LoadFile(selectedNode.name)
 			}
 		}
 	}
@@ -287,11 +347,11 @@ func (e *Editor) scroll(amount int) {
 func (e *Editor) handleTreeClick(x, y int) {
 	// Find which node was clicked
 	var clickedNode *FileNode
-	
+
 	// Count visible nodes to find which one was clicked
 	e.treeSelectedLine = y
 	clickedNode = e.getSelectedNode()
-	
+
 	if clickedNode != nil {
 		if clickedNode.isDir {
 			clickedNode.expanded = !clickedNode.expanded
@@ -306,5 +366,3 @@ func (e *Editor) handleTreeClick(x, y int) {
 		}
 	}
 }
-
- 

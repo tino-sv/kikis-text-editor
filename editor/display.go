@@ -2,6 +2,7 @@ package editor
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
@@ -16,47 +17,47 @@ const VERSION = "v0.1"
 func (e *Editor) Draw() {
 	// Clear screen only once per frame
 	e.screen.Clear()
-	
+
 	// Calculate content area
 	contentStartX := 0
-	
+
 	// Draw file tree if visible
 	if e.treeVisible {
 		e.drawFileTree()
 		contentStartX = e.treeWidth + 1 // Add 1 for separator
 	}
-	
+
 	// Calculate visible region based on scroll position
 	startLine := e.scrollY
 	endLine := startLine + e.screenHeight - 2 // Account for status bars
-	
+
 	if endLine > len(e.lines) {
 		endLine = len(e.lines)
 	}
-	
+
 	// Draw only visible content
 	for y := startLine; y < endLine; y++ {
 		screenY := y - startLine
 		lineNum := y + 1
-		
+
 		// Draw line numbers if enabled
 		if e.showLineNumbers {
 			lineNumStr := fmt.Sprintf("%4d ", lineNum)
 			lineNumStyle := tcell.StyleDefault.Foreground(tcell.ColorDarkGray)
 			drawText(e.screen, contentStartX, screenY, lineNumStyle, lineNumStr)
 		}
-		
+
 		// Calculate line offset based on line numbers
 		xOffset := contentStartX
 		if e.showLineNumbers {
 			xOffset += 5
 		}
-		
+
 		// Draw the line content with syntax highlighting
 		if y < len(e.lines) {
 			line := e.lines[y]
-			styles := e.highlightSyntax(line, y)
-			
+			styles := e.syntaxStyle(line)
+
 			// Draw each character with its style
 			for x, r := range line {
 				if x < len(styles) {
@@ -65,11 +66,16 @@ func (e *Editor) Draw() {
 			}
 		}
 	}
-	
+
+	// Draw completions if active
+	if e.completionActive && len(e.completions) > 0 {
+		e.drawCompletions()
+	}
+
 	// Draw status bars
 	e.drawStatusBar()
 	e.drawMessageBar()
-	
+
 	// Position cursor
 	cursorX := e.cursorX
 	if e.showLineNumbers {
@@ -78,12 +84,12 @@ func (e *Editor) Draw() {
 	if e.treeVisible {
 		cursorX += e.treeWidth + 1
 	}
-	
+
 	// Only show cursor if it's in the visible area
-	if e.cursorY >= e.scrollY && e.cursorY < e.scrollY + e.screenHeight - 2 {
-		e.screen.ShowCursor(cursorX, e.cursorY - e.scrollY)
+	if e.cursorY >= e.scrollY && e.cursorY < e.scrollY+e.screenHeight-2 {
+		e.screen.ShowCursor(cursorX, e.cursorY-e.scrollY)
 	}
-	
+
 	// Update screen in one go
 	e.screen.Show()
 }
@@ -103,7 +109,7 @@ func (e *Editor) setStatusMessage(msg string) {
 func (e *Editor) syntaxStyle(line string) []tcell.Style {
 	styles := make([]tcell.Style, len(line))
 	defaultStyle := tcell.StyleDefault
-	
+
 	// Define syntax styles
 	keywordStyle := defaultStyle.Foreground(tcell.ColorPurple)
 	typeStyle := defaultStyle.Foreground(tcell.ColorTeal)
@@ -200,50 +206,23 @@ func (e *Editor) syntaxStyle(line string) []tcell.Style {
 }
 
 func (e *Editor) drawStatusBar() {
-	// Create a more informative status bar
-	statusStyle := tcell.StyleDefault.Background(tcell.ColorDarkBlue).Foreground(tcell.ColorWhite)
-	modeStyle := tcell.StyleDefault.Background(tcell.ColorRed).Foreground(tcell.ColorWhite).Bold(true)
-	
-	// Clear the status bar
-	for x := 0; x < e.screenWidth; x++ {
-		e.screen.SetContent(x, e.screenHeight-2, ' ', nil, statusStyle)
+	e.updateStatus()
+
+	info := []string{
+		e.statusLine,
 	}
-	
-	// Left side: filename, modified status, and mode
-	filename := e.filename
-	if filename == "" {
-		filename = "[No Name]"
+
+	status := strings.Join(info, " | ")
+	maxWidth := e.screenWidth
+	if len(status) > maxWidth {
+		status = status[:maxWidth-3] + "..."
 	}
-	
-	modified := ""
-	if e.isDirty {
-		modified = " [+]"
-	}
-	
-	modeText := fmt.Sprintf(" %s ", strings.ToUpper(e.mode))
-	
-	// Right side: line/column info
-	lineInfo := fmt.Sprintf("Ln %d, Col %d ", e.cursorY+1, e.cursorX+1)
-	
-	// Draw mode with special highlighting
-	drawText(e.screen, 0, e.screenHeight-2, modeStyle, modeText)
-	
-	// Draw filename and modified status
-	fileStatus := fmt.Sprintf(" %s%s ", filename, modified)
-	drawText(e.screen, len(modeText), e.screenHeight-2, statusStyle, fileStatus)
-	
-	// Draw line info on the right
-	drawText(e.screen, e.screenWidth-len(lineInfo), e.screenHeight-2, statusStyle, lineInfo)
-	
-	// Draw language type if known
-	langNames := []string{"Go", "Python", "JavaScript", "Rust", "Unknown"}
-	if e.filename != "" {
-		lang := e.detectLanguage()
-		if lang >= 0 && lang < len(langNames) {
-			langText := fmt.Sprintf(" %s ", langNames[lang])
-			drawText(e.screen, e.screenWidth-len(lineInfo)-len(langText), e.screenHeight-2, statusStyle, langText)
-		}
-	}
+
+	style := tcell.StyleDefault.
+		Background(tcell.ColorDarkBlue).
+		Foreground(tcell.ColorWhite)
+
+	drawText(e.screen, 0, e.screenHeight-1, style, status)
 }
 
 func (e *Editor) showHelp() {
@@ -276,20 +255,30 @@ func (e *Editor) showHelp() {
 		"",
 		"File Operations:",
 		"  :w      - Save file",
+		"  :saveas <filename> - Save file with a new name",
 		"  :q      - Quit",
 		"  :wq     - Save and quit",
+		"  :line <number> - Go to a specific line number",
+		"  :info   - Show file information",
+		"  :wc     - Count lines, words, and characters",
+		"  :reload - Reload the current file",
 		"",
-		"Search:",
-		"  /       - Start search",
-		"  n       - Next match",
-		"  N       - Previous match",
+		"Settings:",
+		"  :set number   - Show line numbers",
+		"  :set nonumber - Hide line numbers",
+		"  :set tabsize <n> - Set tab size",
+		"  :set syntax on|off - Toggle syntax highlighting",
+		"",
+		"Search and Replace:",
+		"  :find <text>  - Find text in file",
+		"  :replace <old> <new> - Replace text in file",
 		"",
 		"Press any key to close help",
 	}
 
 	// Save current screen
 	e.screen.Clear()
-	
+
 	// Center help text
 	for i, line := range helpText {
 		x := (e.screenWidth - len(line)) / 2
@@ -298,9 +287,9 @@ func (e *Editor) showHelp() {
 		}
 		drawText(e.screen, x, i, tcell.StyleDefault.Foreground(tcell.ColorWhite), line)
 	}
-	
+
 	e.screen.Show()
-	
+
 	// Wait for keypress
 	for {
 		ev := e.screen.PollEvent()
@@ -316,17 +305,17 @@ func (e *Editor) drawMessageBar() {
 	for x := 0; x < e.screenWidth; x++ {
 		e.screen.SetContent(x, e.screenHeight-1, ' ', nil, tcell.StyleDefault)
 	}
-	
+
 	// Show status message if it exists
 	if e.statusMessage != "" && time.Now().Before(e.statusTimeout) {
 		drawText(e.screen, 0, e.screenHeight-1, tcell.StyleDefault, e.statusMessage)
 		return
 	}
-	
+
 	// Otherwise show context-sensitive key hints
 	hintStyle := tcell.StyleDefault.Foreground(tcell.ColorDarkGray)
 	var hints string
-	
+
 	switch e.mode {
 	case "normal":
 		if e.treeVisible {
@@ -345,11 +334,121 @@ func (e *Editor) drawMessageBar() {
 	case "rename":
 		hints = "Enter:rename  Esc:cancel"
 	}
-	
+
 	// Truncate if too long
 	if len(hints) > e.screenWidth && e.screenWidth > 3 {
 		hints = hints[:e.screenWidth-3] + "..."
 	}
-	
+
 	drawText(e.screen, 0, e.screenHeight-1, hintStyle, hints)
-} 
+}
+
+func (e *Editor) showWelcomeScreen() {
+	e.screen.Clear()
+
+	// Title
+	title := "Welcome to Kiki's Text Editor"
+	drawText(e.screen, (e.screenWidth-len(title))/2, 2, tcell.StyleDefault.Foreground(tcell.ColorYellow).Bold(true), title)
+
+	// Version
+	version := VERSION
+	drawText(e.screen, (e.screenWidth-len(version))/2, 4, tcell.StyleDefault.Foreground(tcell.ColorGray), version)
+
+	// Quick start guide
+	startY := 7
+	quickStart := []string{
+		"Quick Start Guide:",
+		"",
+		"  • Press 't' to toggle file tree",
+		"  • Press 'i' to enter insert mode",
+		"  • Press ':' to enter command mode",
+		"  • Press '?' for help",
+	}
+
+	for i, line := range quickStart {
+		drawText(e.screen, 10, startY+i, tcell.StyleDefault.Foreground(tcell.ColorWhite), line)
+	}
+
+	// Settings section
+	settingsY := startY + len(quickStart) + 2
+	settingsTitle := "Current Settings:"
+	drawText(e.screen, 10, settingsY, tcell.StyleDefault.Foreground(tcell.ColorGreen).Bold(true), settingsTitle)
+
+	// Display key settings
+	settings := []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{"Tab Size", "tabSize", e.settings["tabSize"]},
+		{"Line Numbers", "showLineNumbers", e.settings["showLineNumbers"]},
+		{"Syntax Highlighting", "syntaxHighlight", e.settings["syntaxHighlight"]},
+		{"Auto Indent", "autoIndent", e.settings["autoIndent"]},
+		{"Auto Complete", "autoComplete", e.settings["autoComplete"]},
+	}
+
+	for i, setting := range settings {
+		// Format boolean settings as "On/Off" instead of "true/false"
+		displayValue := setting.value
+		if displayValue == "true" {
+			displayValue = "On"
+		} else if displayValue == "false" {
+			displayValue = "Off"
+		}
+
+		settingText := fmt.Sprintf("  • %-20s: %s", setting.name, displayValue)
+		drawText(e.screen, 10, settingsY+i+2, tcell.StyleDefault.Foreground(tcell.ColorWhite), settingText)
+	}
+
+	// Configuration tip
+	configTip := fmt.Sprintf("Configuration file: %s", e.configFile)
+	drawText(e.screen, 10, settingsY+len(settings)+4, tcell.StyleDefault.Foreground(tcell.ColorGray), configTip)
+
+	// Footer
+	footer := "Press any key to continue..."
+	drawText(e.screen, (e.screenWidth-len(footer))/2, e.screenHeight-2, tcell.StyleDefault.Foreground(tcell.ColorGray), footer)
+
+	e.screen.Show()
+
+	// Wait for keypress
+	for {
+		ev := e.screen.PollEvent()
+		switch ev.(type) {
+		case *tcell.EventKey:
+			e.isWelcomeScreen = false
+			return
+		case *tcell.EventResize:
+			// Update screen dimensions
+			e.screenWidth, e.screenHeight = e.screen.Size()
+			e.showWelcomeScreen() // Redraw welcome screen after resize
+			return
+		}
+	}
+}
+
+func (e *Editor) updateStatus() {
+	status := []string{
+		fmt.Sprintf("Line %d/%d", e.cursorY+1, len(e.lines)),
+		fmt.Sprintf("Col %d", e.cursorX+1),
+	}
+
+	if e.filename != "" {
+		status = append(status, filepath.Base(e.filename))
+	}
+
+	if e.isDirty {
+		status = append(status, "[modified]")
+	}
+
+	if e.mode != "normal" {
+		status = append(status, strings.ToUpper(e.mode))
+	}
+
+	if e.searchTerm != "" {
+		matches := len(e.searchMatches)
+		current := e.currentMatch + 1
+		status = append(status, fmt.Sprintf("Search: %d/%d", current, matches))
+	}
+
+	e.statusLine = strings.Join(status, " | ")
+}
