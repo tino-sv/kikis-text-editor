@@ -2,15 +2,22 @@ package editor
 
 // Cursor movement and manipulation
 func (e *Editor) moveCursor(dx, dy int) {
-    newX := e.cursorX + dx
+    // Calculate new position
     newY := e.cursorY + dy
+    newX := e.cursorX + dx
 
+    // Ensure we stay within valid lines
     if newY >= 0 && newY < len(e.lines) {
-        lineLength := len(e.lines[newY])
-        if newX >= 0 && newX <= lineLength {
-            e.cursorX = newX
-            e.cursorY = newY
+        e.cursorY = newY
+        // Adjust X position based on new line length
+        if e.cursorX > len(e.lines[e.cursorY]) {
+            e.cursorX = len(e.lines[e.cursorY])
         }
+    }
+
+    // Ensure X position is valid
+    if newX >= 0 && newX <= len(e.lines[e.cursorY]) {
+        e.cursorX = newX
     }
 }
 

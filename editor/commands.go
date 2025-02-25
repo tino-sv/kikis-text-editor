@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/gdamore/tcell/v2"
 )
@@ -27,6 +28,30 @@ func (e *Editor) handleCommandMode(ev *tcell.EventKey) {
 }
 
 func (e *Editor) handleCommand() {
+    // Check for file removal command
+    if strings.HasPrefix(e.commandBuffer, "rm ") {
+        if e.commandBuffer == "rm y" {
+            node := e.getSelectedNode()
+            if node != nil && !node.isDir {
+                err := os.Remove(node.name)
+                if err != nil {
+                    e.setStatusMessage(fmt.Sprintf("Error deleting file: %v", err))
+                } else {
+                    e.setStatusMessage(fmt.Sprintf("Deleted %s", node.name))
+                    e.refreshFileTree()
+                }
+            }
+        } else if e.commandBuffer == "rm n" {
+            e.setStatusMessage("Delete cancelled")
+        } else {
+            // First time "rm" command is entered
+            e.setStatusMessage("Delete file? (y/n)")
+            e.commandBuffer = "rm "  // Reset to wait for y/n
+        }
+        return
+    }
+
+    // Handle other commands
     switch e.commandBuffer {
     case "w":
         if err := e.saveFile(); err != nil {

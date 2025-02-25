@@ -69,7 +69,18 @@ func (e *Editor) drawFileTree() {
     dirStyle := style.Foreground(tcell.ColorYellow)
     fileStyle := style.Foreground(tcell.ColorWhite)
     selectedStyle := style.Background(tcell.ColorDarkBlue)
-
+    
+    // Draw tree background and separator
+    for y := 0; y < e.screenHeight; y++ {
+        // Draw tree background
+        for x := 0; x < e.treeWidth; x++ {
+            e.screen.SetContent(x, y, ' ', nil, style)
+        }
+        
+        // Draw separator
+        e.screen.SetContent(e.treeWidth, y, '│', nil, style)
+    }
+    
     y := 0
     e.drawTreeNode(e.fileTree, 0, &y, dirStyle, fileStyle, selectedStyle)
 }
@@ -119,6 +130,15 @@ func (e *Editor) handleTreeNavigation(ev *tcell.EventKey) {
         switch ev.Rune() {
         case 'j': // Move down
             e.treeSelectedLine++
+            // Ensure we don't go past the last visible node
+            maxLine := 0
+            e.countVisibleNodes(e.fileTree, 0, &maxLine)
+            if e.treeSelectedLine >= maxLine {
+                e.treeSelectedLine = maxLine - 1
+            }
+            if e.treeSelectedLine < 0 {
+                e.treeSelectedLine = 0
+            }
         case 'k': // Move up
             if e.treeSelectedLine > 0 {
                 e.treeSelectedLine--
@@ -138,13 +158,62 @@ func (e *Editor) handleTreeNavigation(ev *tcell.EventKey) {
                     }
                 } else {
                     e.SetFilename(node.name)
-                    if err := e.loadFile(node.name); err == nil {
+                    if err := e.LoadFile(node.name); err == nil {
                         e.treeVisible = false
                     }
                 }
             }
+        case 'D': // Delete file (capital D to avoid accidental deletion)
+            node := e.getSelectedNode()
+            if node != nil {
+                if node.isDir {
+                    e.SetStatusMessage("Cannot delete directories")
+                    return
+                }
+                
+                // Confirm deletion
+                e.mode = "confirm"
+                e.confirmAction = func() {
+                    err := os.Remove(node.name)
+                    if err != nil {
+                        e.SetStatusMessage(fmt.Sprintf("Error deleting file: %v", err))
+                    } else {
+                        e.SetStatusMessage(fmt.Sprintf("Deleted %s", node.name))
+                        e.refreshFileTree()
+                    }
+                    e.mode = "normal"
+                }
+                e.SetStatusMessage(fmt.Sprintf("Delete %s? (y/n)", filepath.Base(node.name)))
+                return
+            }
+        case 'n': // Create new file
+            node := e.getSelectedNode()
+            if node != nil {
+                dir := node.name
+                if !node.isDir {
+                    dir = filepath.Dir(node.name)
+                }
+                e.mode = "filename"
+                e.commandBuffer = ""
+                e.SetStatusMessage("New file name: ")
+                e.newFileDir = dir
+                return
+            }
+        case 'r': // Rename file
+            node := e.getSelectedNode()
+            if node != nil {
+                if node.isDir {
+                    e.SetStatusMessage("Cannot rename directories")
+                    return
+                }
+                e.mode = "rename"
+                e.commandBuffer = ""
+                e.newFileDir = node.name // Store original filename
+                e.SetStatusMessage("New name: ")
+                return
+            }
         }
-    case tcell.KeyEnter: // Open file or toggle directory
+    case tcell.KeyEnter:
         node := e.getSelectedNode()
         if node != nil {
             if node.isDir {
@@ -154,7 +223,7 @@ func (e *Editor) handleTreeNavigation(ev *tcell.EventKey) {
                 }
             } else {
                 e.SetFilename(node.name)
-                if err := e.loadFile(node.name); err == nil {
+                if err := e.LoadFile(node.name); err == nil {
                     e.treeVisible = false
                 }
             }
@@ -184,7 +253,7 @@ func (e *Editor) findNodeAtLine(node *FileNode, y *int) *FileNode {
 }
 
 // Add this new method to load file contents
-func (e *Editor) loadFile(filename string) error {
+func (e *Editor) LoadFile(filename string) error {
     file, err := os.Open(filename)
     if err != nil {
         e.setStatusMessage(fmt.Sprintf("Error opening file: %v", err))
@@ -217,4 +286,14 @@ func (e *Editor) loadFile(filename string) error {
     e.isDirty = false
     e.setStatusMessage(fmt.Sprintf("Loaded %s (%d lines)", filename, len(e.lines)))
     return nil
+}
+
+// Add this helper function to count visible nodes
+func (e *Editor) countVisibleNodes(node *FileNode, depth int, count *int) {
+    *count++
+    if node.expanded {
+        for _, child := range node.children {
+            e.countVisibleNodes(child, depth+1, count)
+        }
+    }
 } 

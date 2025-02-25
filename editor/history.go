@@ -2,12 +2,20 @@ package editor
 
 // Undo/Redo functionality
 type Action struct {
+    Type     string
     lineNum  int
     oldLine  string
     newLine  string
     cursorX  int
     cursorY  int
+    text     string
 }
+
+const (
+    ActionInsert    = "insert"
+    ActionDelete    = "delete"
+    ActionJoinLines = "join_lines"
+)
 
 func (e *Editor) addUndo(oldLine string) {
     action := Action{

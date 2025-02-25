@@ -16,6 +16,11 @@ func main() {
 	// If a file path is provided, open it
 	if len(os.Args) > 1 {
 		ed.SetFilename(os.Args[1])
+		if err := ed.LoadFile(os.Args[1]); err != nil {
+			ed.SetStatusMessage(fmt.Sprintf("Error loading file: %v", err))
+		}
+	} else {
+		ed.SetFilename("[New File]")
 	}
 
 	// Run the editor (will show file tree by default)
