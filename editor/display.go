@@ -11,7 +11,7 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-const VERSION = "v0.1"
+const VERSION = "v0.2.0.4"
 
 // Display-related functionality
 func (e *Editor) Draw() {

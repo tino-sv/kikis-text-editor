@@ -10,8 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"runtime/debug"
-
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -38,7 +36,6 @@ type Editor struct {
 	undoStack        []Action
 	redoStack        []Action
 	commandBuffer    string
-	showLineNumbers  bool
 	quit             bool
 	treeVisible      bool
 	treeWidth        int
@@ -60,12 +57,14 @@ type Editor struct {
 	// User settings
 	settings   map[string]string
 	configFile string
-	wordWrap   bool
 
 	lineCache       map[int]string // Cache for long lines
 	syntaxCache     map[string][]tcell.Style
 	isLargeFile     bool
+	showLineNumbers bool
 	syntaxHighlight bool
+	debugMode       bool
+	wordWrap        bool
 	statusLine      string
 	searchIndex     SearchIndex
 }
@@ -104,8 +103,9 @@ func NewEditor() (*Editor, error) {
 		undoStack:       make([]Action, 0),
 		redoStack:       make([]Action, 0),
 		isWelcomeScreen: true,
-		wordWrap:        false,
+		debugMode:       false,
 		syntaxHighlight: true,
+		wordWrap:        false,
 		statusLine:      "",
 		searchIndex: SearchIndex{
 			positions: make(map[string][]Position),
@@ -125,24 +125,6 @@ func NewEditor() (*Editor, error) {
 }
 
 func (e *Editor) Run() {
-	defer func() {
-		if r := recover(); r != nil {
-			e.screen.Fini()
-			log.Printf("Recovered from panic: %v\n", r)
-			debug.PrintStack()
-			// Try to save work
-			if e.isDirty && e.filename != "" {
-				backupFile := e.filename + ".backup"
-				if err := os.Rename(e.filename, backupFile); err != nil {
-					log.Printf("Failed to create backup: %v\n", err)
-				}
-				if err := e.SaveFile(); err != nil {
-					log.Printf("Failed to save backup: %v\n", err)
-				}
-			}
-		}
-	}()
-
 	// Basic nil checks
 	if e == nil || e.screen == nil {
 		log.Fatal("Editor or screen not properly initialized")
@@ -196,12 +178,10 @@ func (e *Editor) deleteChar() {
 	e.isDirty = true
 
 	e.undoStack = append(e.undoStack, Action{
-		Type:    "delete",
-		action:  "delete",
 		lines:   e.lines,
 		cursorX: e.cursorX,
 		cursorY: e.cursorY,
-		text:    "",
+		action:  "delete",
 	})
 	e.redoStack = nil
 }
@@ -218,12 +198,10 @@ func (e *Editor) joinLines() {
 
 		// Record action for undo
 		e.undoStack = append(e.undoStack, Action{
-			Type:    "join",
-			action:  "join",
 			lines:   e.lines,
 			cursorX: e.cursorX,
 			cursorY: e.cursorY,
-			text:    "",
+			action:  "join",
 		})
 		e.redoStack = nil
 	}
@@ -252,8 +230,8 @@ func (e *Editor) getFileSize() int64 {
 	return file.Size()
 }
 
-func (e *Editor) addUndo(change Action) {
-	e.undoStack = append(e.undoStack, change)
+func (e *Editor) addUndo(action Action) {
+	e.undoStack = append(e.undoStack, action)
 	// Clear redo stack when new change is made
 	e.redoStack = nil
 }
@@ -265,21 +243,19 @@ func (e *Editor) undo() {
 
 	// Save current state to redo stack
 	currentState := Action{
-		Type:    "redo",
-		action:  "redo",
 		lines:   append([]string{}, e.lines...),
 		cursorX: e.cursorX,
 		cursorY: e.cursorY,
-		text:    "",
+		action:  "redo",
 	}
 	e.redoStack = append(e.redoStack, currentState)
 
 	// Restore previous state
-	change := e.undoStack[len(e.undoStack)-1]
+	action := e.undoStack[len(e.undoStack)-1]
 	e.undoStack = e.undoStack[:len(e.undoStack)-1]
-	e.lines = append([]string{}, change.lines...)
-	e.cursorX = change.cursorX
-	e.cursorY = change.cursorY
+	e.lines = append([]string{}, action.lines...)
+	e.cursorX = action.cursorX
+	e.cursorY = action.cursorY
 }
 
 func (e *Editor) SaveFile() error {
@@ -287,39 +263,16 @@ func (e *Editor) SaveFile() error {
 		return fmt.Errorf("no filename specified")
 	}
 
-	// Create backup of existing file
-	if _, err := os.Stat(e.filename); err == nil {
-		backupName := e.filename + "~"
-		if err := os.Rename(e.filename, backupName); err != nil {
-			return fmt.Errorf("backup failed: %v", err)
-		}
+	// Create backup before saving
+	if err := e.createBackup(); err != nil {
+		return fmt.Errorf("backup failed: %v", err)
 	}
 
 	// Write to temporary file first
 	tempFile := e.filename + ".tmp"
-	f, err := os.Create(tempFile)
-	if err != nil {
-		return fmt.Errorf("create failed: %v", err)
-	}
-
-	writer := bufio.NewWriter(f)
-	for _, line := range e.lines {
-		if _, err := writer.WriteString(line + "\n"); err != nil {
-			f.Close()
-			os.Remove(tempFile)
-			return fmt.Errorf("write failed: %v", err)
-		}
-	}
-
-	if err := writer.Flush(); err != nil {
-		f.Close()
+	if err := e.writeToFile(tempFile); err != nil {
 		os.Remove(tempFile)
-		return fmt.Errorf("flush failed: %v", err)
-	}
-
-	if err := f.Close(); err != nil {
-		os.Remove(tempFile)
-		return fmt.Errorf("close failed: %v", err)
+		return fmt.Errorf("write failed: %v", err)
 	}
 
 	// Rename temporary file to actual file
@@ -329,6 +282,35 @@ func (e *Editor) SaveFile() error {
 	}
 
 	e.isDirty = false
+	return nil
+}
+
+func (e *Editor) createBackup() error {
+	if e.filename == "" {
+		return fmt.Errorf("no filename specified")
+	}
+
+	backupFile := e.filename + ".bak"
+	if _, err := os.Stat(backupFile); os.IsNotExist(err) {
+		return nil
+	}
+
+	return fmt.Errorf("backup file already exists")
+}
+
+func (e *Editor) writeToFile(filename string) error {
+	file, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	for _, line := range e.lines {
+		if _, err := file.WriteString(line + "\n"); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -402,46 +384,19 @@ func (e *Editor) replaceAll(old, new string) int {
 	return count
 }
 
-func (e *Editor) handleCompletion() {
-	if len(e.completions) > 0 {
-		// Insert the selected completion
-		completion := e.completions[e.completionIndex]
-		e.insertCompletion(completion)
-
-		// Clear completions after selection
-		e.completions = nil
-		e.completionIndex = 0
-		e.completionActive = false
-	}
-}
-
-func (e *Editor) insertCompletion(completion Completion) {
-	// Get current word
-	line := e.lines[e.cursorY]
-	start := e.cursorX
-	for start > 0 && isIdentChar(rune(line[start-1])) {
-		start--
+func (e *Editor) EnableDebugMode() {
+	debugPath := filepath.Join(os.Getenv("HOME"), ".kiki-editor")
+	if err := os.MkdirAll(debugPath, 0755); err != nil {
+		return
 	}
 
-	// Replace current word with completion
-	e.lines[e.cursorY] = line[:start] + completion.Text + line[e.cursorX:]
-	e.cursorX = start + len(completion.Text)
-	e.isDirty = true
-}
-
-func (e *Editor) optimizeMemory() {
-	// Clear undo history if it's too large
-	if len(e.undoStack) > 1000 {
-		e.undoStack = e.undoStack[len(e.undoStack)-1000:]
+	logFile := filepath.Join(debugPath, "debug.log")
+	f, err := os.OpenFile(logFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+	if err != nil {
+		return
 	}
 
-	// Clear syntax highlighting cache periodically
-	if len(e.syntaxCache) > 5000 {
-		e.syntaxCache = make(map[string][]tcell.Style)
-	}
-
-	// Clear search results if not actively searching
-	if e.mode != "search" && len(e.searchMatches) > 0 {
-		e.searchMatches = nil
-	}
+	log.SetOutput(f)
+	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+	e.debugMode = true
 }
