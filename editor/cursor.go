@@ -1,6 +1,7 @@
 package editor
 
 import (
+	"slices"
 	"strings"
 )
 
@@ -102,7 +103,7 @@ func (e *Editor) insertNewLine() {
 	e.lines[e.cursorY] = currentLine[:e.cursorX]
 
 	// Insert the new line
-	e.lines = append(e.lines[:e.cursorY+1], append([]string{newLine}, e.lines[e.cursorY+1:]...)...)
+	e.lines = slices.Insert(e.lines, e.cursorY+1, newLine)
 
 	// Move cursor to the beginning of the new line (after indentation)
 	e.cursorY++
@@ -131,7 +132,7 @@ func (e *Editor) backspace() {
 		// Join with previous line
 		newX := len(e.lines[e.cursorY-1])
 		e.lines[e.cursorY-1] += e.lines[e.cursorY]
-		e.lines = append(e.lines[:e.cursorY], e.lines[e.cursorY+1:]...)
+		e.lines = slices.Delete(e.lines, e.cursorY, e.cursorY+1)
 		e.cursorY--
 		e.cursorX = newX
 		e.isDirty = true
